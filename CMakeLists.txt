@@ -18,9 +18,11 @@ add_library(lvgl::drivers ALIAS lv_drivers)
 
 target_include_directories(lv_drivers SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-find_package(PkgConfig)
-pkg_check_modules(PKG_WAYLAND wayland-client wayland-cursor wayland-protocols xkbcommon)
-pkg_check_modules(PKG_LVGL lvgl)
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND)
+  pkg_check_modules(PKG_WAYLAND wayland-client wayland-cursor wayland-protocols xkbcommon)
+  pkg_check_modules(PKG_LVGL lvgl)
+endif()
 target_link_libraries(lv_drivers PUBLIC lvgl ${PKG_WAYLAND_LIBRARIES})
 
 if("${LIB_INSTALL_DIR}" STREQUAL "")

@@ -85,6 +85,19 @@ void sdl_mousewheel_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data);
  */
 void sdl_keyboard_read(lv_indev_drv_t * indev_drv, lv_indev_data_t * data);
 
+/**
+ * Runtime resolution variables (use instead of SDL_HOR_RES/SDL_VER_RES for dynamic resize)
+ */
+extern int sdl_cur_hor_res;
+extern int sdl_cur_ver_res;
+
+/**
+ * Resize the SDL display at runtime.
+ * Destroys and recreates window, renderer, texture, and framebuffer.
+ */
+void sdl_resize_display(int w, int h);
+uint32_t sdl_read_fb_pixel(int x, int y);
+
 /*For backward compatibility. Will be removed.*/
 #define monitor_init sdl_init
 #define monitor_flush sdl_display_flush

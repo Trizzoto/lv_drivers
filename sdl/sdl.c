@@ -78,7 +78,11 @@ typedef struct {
 #if SDL_DOUBLE_BUFFERED
     uint32_t * tft_fb_act;
 #else
+#if LV_COLOR_DEPTH == 16
+    uint16_t * tft_fb;   /* RGB565 direct — no per-pixel conversion */
+#else
     uint32_t * tft_fb;
+#endif
 #endif
 }monitor_t;
 
@@ -100,6 +104,10 @@ static void monitor_sdl_refr(lv_timer_t * t);
  **********************/
 monitor_t monitor;
 
+/* Runtime-changeable resolution (initialized to compile-time defaults) */
+int sdl_cur_hor_res = SDL_HOR_RES;
+int sdl_cur_ver_res = SDL_VER_RES;
+
 #if SDL_DUAL_DISPLAY
 monitor_t monitor2;
 #endif
@@ -115,6 +123,10 @@ monitor_t monitor2;
 void sdl_init(void)
 {
     /*Initialize the SDL*/
+#ifdef __EMSCRIPTEN__
+    /* Limit keyboard capture to canvas only — allows HTML inputs to work */
+    SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
+#endif
     SDL_Init(SDL_INIT_VIDEO);
 
     SDL_SetEventFilter(quit_filter, NULL);
@@ -157,22 +169,11 @@ void sdl_display_flush(lv_disp_drv_t * disp_drv, const lv_area_t * area, lv_colo
 #else /*SDL_DOUBLE_BUFFERED*/
 
     int32_t y;
-#if LV_COLOR_DEPTH != 24 && LV_COLOR_DEPTH != 32    /*32 is valid but support 24 for backward compatibility too*/
-    int32_t x;
-    for(y = area->y1; y <= area->y2 && y < vres; y++) {
-        for(x = area->x1; x <= area->x2; x++) {
-            monitor.tft_fb[y * hres + x] = lv_color_to32(*color_p);
-            color_p++;
-        }
-
-    }
-#else
     uint32_t w = lv_area_get_width(area);
     for(y = area->y1; y <= area->y2 && y < vres; y++) {
         memcpy(&monitor.tft_fb[y * hres + area->x1], color_p, w * sizeof(lv_color_t));
         color_p += w;
     }
-#endif
 #endif /*SDL_DOUBLE_BUFFERED*/
 
     monitor.sdl_refr_qry = true;
@@ -346,19 +347,29 @@ static void window_create(monitor_t * m)
 
     m->window = SDL_CreateWindow(SDL_WINDOW_TITLE,
                               SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                              SDL_HOR_RES * SDL_ZOOM, SDL_VER_RES * SDL_ZOOM, flag);       /*last param. SDL_WINDOW_BORDERLESS to hide borders*/
+                              sdl_cur_hor_res * SDL_ZOOM, sdl_cur_ver_res * SDL_ZOOM, flag);
 
     m->renderer = SDL_CreateRenderer(m->window, -1, SDL_RENDERER_SOFTWARE);
+#if LV_COLOR_DEPTH == 16
     m->texture = SDL_CreateTexture(m->renderer,
-                                SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, SDL_HOR_RES, SDL_VER_RES);
+                                SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STATIC, sdl_cur_hor_res, sdl_cur_ver_res);
+#else
+    m->texture = SDL_CreateTexture(m->renderer,
+                                SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, sdl_cur_hor_res, sdl_cur_ver_res);
+#endif
     SDL_SetTextureBlendMode(m->texture, SDL_BLENDMODE_BLEND);
 
-    /*Initialize the frame buffer to gray (77 is an empirical value) */
+    /*Initialize the frame buffer to black */
 #if SDL_DOUBLE_BUFFERED
-    SDL_UpdateTexture(m->texture, NULL, m->tft_fb_act, SDL_HOR_RES * sizeof(uint32_t));
+    SDL_UpdateTexture(m->texture, NULL, m->tft_fb_act, sdl_cur_hor_res * sizeof(uint32_t));
 #else
-    m->tft_fb = (uint32_t *)malloc(sizeof(uint32_t) * SDL_HOR_RES * SDL_VER_RES);
-    memset(m->tft_fb, 0x44, SDL_HOR_RES * SDL_VER_RES * sizeof(uint32_t));
+#if LV_COLOR_DEPTH == 16
+    m->tft_fb = (uint16_t *)malloc(sizeof(uint16_t) * sdl_cur_hor_res * sdl_cur_ver_res);
+    memset(m->tft_fb, 0x00, sdl_cur_hor_res * sdl_cur_ver_res * sizeof(uint16_t));
+#else
+    m->tft_fb = (uint32_t *)malloc(sizeof(uint32_t) * sdl_cur_hor_res * sdl_cur_ver_res);
+    memset(m->tft_fb, 0x44, sdl_cur_hor_res * sdl_cur_ver_res * sizeof(uint32_t));
+#endif
 #endif
 
     m->sdl_refr_qry = true;
@@ -368,23 +379,82 @@ static void window_create(monitor_t * m)
 static void window_update(monitor_t * m)
 {
 #if SDL_DOUBLE_BUFFERED == 0
-    SDL_UpdateTexture(m->texture, NULL, m->tft_fb, SDL_HOR_RES * sizeof(uint32_t));
+#if LV_COLOR_DEPTH == 16
+    SDL_UpdateTexture(m->texture, NULL, m->tft_fb, sdl_cur_hor_res * sizeof(uint16_t));
+#else
+    SDL_UpdateTexture(m->texture, NULL, m->tft_fb, sdl_cur_hor_res * sizeof(uint32_t));
+#endif
 #else
     if(m->tft_fb_act == NULL) return;
-    SDL_UpdateTexture(m->texture, NULL, m->tft_fb_act, SDL_HOR_RES * sizeof(uint32_t));
+    SDL_UpdateTexture(m->texture, NULL, m->tft_fb_act, sdl_cur_hor_res * sizeof(uint32_t));
 #endif
     SDL_RenderClear(m->renderer);
     lv_disp_t * d = _lv_refr_get_disp_refreshing();
     if(d && d->driver->screen_transp) {
         SDL_SetRenderDrawColor(m->renderer, 0xff, 0, 0, 0xff);
         SDL_Rect r;
-        r.x = 0; r.y = 0; r.w = SDL_HOR_RES; r.h = SDL_VER_RES;
+        r.x = 0; r.y = 0; r.w = sdl_cur_hor_res; r.h = sdl_cur_ver_res;
         SDL_RenderDrawRect(m->renderer, &r);
     }
 
     /*Update the renderer with the texture containing the rendered image*/
     SDL_RenderCopy(m->renderer, m->texture, NULL, NULL);
     SDL_RenderPresent(m->renderer);
+}
+
+void sdl_resize_display(int w, int h)
+{
+    sdl_cur_hor_res = w;
+    sdl_cur_ver_res = h;
+
+    /* Destroy old resources */
+    if(monitor.texture) SDL_DestroyTexture(monitor.texture);
+    if(monitor.renderer) SDL_DestroyRenderer(monitor.renderer);
+    if(monitor.window) SDL_DestroyWindow(monitor.window);
+#if SDL_DOUBLE_BUFFERED == 0
+    free(monitor.tft_fb);
+    monitor.tft_fb = NULL;
+#endif
+
+    /* Recreate with new dimensions */
+    int flag = 0;
+#if SDL_FULLSCREEN
+    flag |= SDL_WINDOW_FULLSCREEN;
+#endif
+    monitor.window = SDL_CreateWindow(SDL_WINDOW_TITLE,
+                              SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                              w * SDL_ZOOM, h * SDL_ZOOM, flag);
+    monitor.renderer = SDL_CreateRenderer(monitor.window, -1, SDL_RENDERER_SOFTWARE);
+#if LV_COLOR_DEPTH == 16
+    monitor.texture = SDL_CreateTexture(monitor.renderer,
+                                SDL_PIXELFORMAT_RGB565, SDL_TEXTUREACCESS_STATIC, w, h);
+    monitor.tft_fb = (uint16_t *)malloc(sizeof(uint16_t) * w * h);
+    memset(monitor.tft_fb, 0x00, w * h * sizeof(uint16_t));
+#else
+    monitor.texture = SDL_CreateTexture(monitor.renderer,
+                                SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, w, h);
+    monitor.tft_fb = (uint32_t *)malloc(sizeof(uint32_t) * w * h);
+    memset(monitor.tft_fb, 0x00, w * h * sizeof(uint32_t));
+#endif
+    SDL_SetTextureBlendMode(monitor.texture, SDL_BLENDMODE_BLEND);
+    monitor.sdl_refr_qry = true;
+}
+
+
+/* Debug/test hook: read one framebuffer pixel (raw RGB565 when
+ * LV_COLOR_DEPTH==16, ARGB8888 otherwise). Returns 0xFFFFFFFF when out of
+ * range or before the framebuffer exists. Used by CDP-driven verification,
+ * which cannot rely on requestAnimationFrame to present the canvas. */
+uint32_t sdl_read_fb_pixel(int x, int y)
+{
+    if(x < 0 || y < 0 || x >= sdl_cur_hor_res || y >= sdl_cur_ver_res) return 0xFFFFFFFF;
+#if SDL_DOUBLE_BUFFERED
+    if(!monitor.tft_fb_act) return 0xFFFFFFFF;
+    return monitor.tft_fb_act[y * sdl_cur_hor_res + x];
+#else
+    if(!monitor.tft_fb) return 0xFFFFFFFF;
+    return monitor.tft_fb[y * sdl_cur_hor_res + x];
+#endif
 }
 
 #endif /*USE_MONITOR || USE_SDL*/
